@@ -31,6 +31,9 @@
         return encoder;
       };
 
+      /**
+       * A class representing ScreenCover
+       */
       class ScreenCover {
         #cover;
         #sequence;
@@ -74,6 +77,9 @@
         }
       }
 
+      /**
+       * A class representing Stream Recorder
+       */
       class Recorder {
         #defaultOptions = {
           encoder: {},
@@ -250,7 +256,7 @@
           recorder.output(createCanvasFromFrame);
           recorder.flush();
           screen.destroy();
-        }, 10 * 1000);
+        }, 20 * 1000);
       }
 
       window.onload = main;
