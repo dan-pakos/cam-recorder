@@ -111,23 +111,33 @@
           this.#encoder = await findEncoder(initEncoder, this.#options.encoder);
         }
 
-        async start(stream) {
+        /**
+         * A method to start recording frames from the stream
+         * @param {ReadableStream} stream
+         * @param {Object} options={sps:2}
+         * @param {Number} options.sps - (save per second) how many frames should save per second
+         * @returns void
+         */
+        async start(stream, options = { sps: 1 }) {
           this.#streamReader = stream.getReader();
+          const { sps } = options;
+          const saveEach = this.#options.encoder.framerate / sps;
 
           let count = 0;
           while (true) {
-            count++;
-
             const { done, value } = await this.#streamReader.read();
             if (done) {
               break;
             }
 
             const frame = value;
+            count++;
 
-            if (count === 1 || count % 15 === 0) {
+            const toSave = count === 1 || count % saveEach === 0;
+            if (toSave) {
               this.#encoder.encode(frame);
             }
+
             frame.close();
           }
         }
@@ -195,8 +205,10 @@
         /**
          * TODO: find the best resolution if many devices
          */
-        const trackProcessor = new MediaStreamTrackProcessor(videoTracks[0]);
-        const readableStream = trackProcessor.readable;
+        const bestVideoTrack = videoTracks[0];
+        const { readable: readableStream } = new MediaStreamTrackProcessor(
+          bestVideoTrack
+        );
 
         // init recorder
         const options = {
@@ -230,7 +242,7 @@
         /**
          * Start recording
          */
-        recorder.start(readableStream);
+        recorder.start(readableStream, { sps: 2 });
 
         /**
          * NOTE: quick and dummy preview
@@ -248,7 +260,7 @@
         };
 
         /**
-         * Stop recording after 20 sec
+         * Stop recording after 10 sec
          */
         setTimeout(async () => {
           await recorder.stop();
@@ -256,7 +268,7 @@
           recorder.output(createCanvasFromFrame);
           recorder.flush();
           screen.destroy();
-        }, 20 * 1000);
+        }, 10 * 1000);
       }
 
       window.onload = main;
