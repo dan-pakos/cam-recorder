@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- <script src="build/cam-recorder.js"></script> -->
+    <!-- <script type="module" src="../src/main.js"></script> -->
+
+    <script>
+      const findEncoder = async (init, prefferedConfig = null) => {
+        const configs = [
+          "avc1.42001E",
+          "vp8",
+          "vp09.00.10.08",
+          "av01.0.04M.08",
+        ];
+
+        let encoder = null;
+
+        if (prefferedConfig) {
+          configs.unshift(prefferedConfig);
+        }
+
+        for (const cfg of configs) {
+          const { supported } = await VideoEncoder.isConfigSupported(cfg);
+          if (supported) {
+            encoder = new VideoEncoder(init);
+            encoder.configure(cfg);
+            break;
+          }
+        }
+
+        return encoder;
+      };
+
+      class ScreenCover {
+        #cover;
+        #sequence;
+        #current;
+
+        constructor(settings) {
+          const { container, sequence } = settings;
+
+          this.#sequence = sequence;
+          this.#current = 0;
+          this.#cover = document.createElement("div");
+          this.#cover.setAttribute(
+            "style",
+            `width: 100vw; height: 100vh; position: absolute; top: 0; left:0; z-index: 9999; background: ${
+              this.#sequence[this.#current]
+            }`
+          );
+
+          if (container) {
+            this.applyTo(container);
+          }
+        }
+
+        applyTo(container) {
+          container.appendChild(this.#cover);
+        }
+
+        next() {
+          let next = this.#sequence[++this.#current];
+
+          if (!next) {
+            this.#current = 0;
+            next = this.#sequence[this.#current];
+          }
+
+          this.#cover.style.background = next;
+        }
+
+        destroy() {
+          this.#cover.remove();
+        }
+      }
+
+      class Recorder {
+        #defaultOptions = {
+          encoder: {},
+          decoder: {},
+        };
+        #options;
+
+        #streamReader;
+        #encoder;
+
+        #frames = [];
+
+        constructor(options) {
+          this.#options = { ...this.#defaultOptions, ...options };
+        }
+
+        async init(afterSave) {
+          const initEncoder = {
+            output: (chunk) => {
+              // before?
+              this.#saveFrame(chunk);
+              afterSave(chunk);
+            },
+            error: (e) => {
+              console.error(e);
+              this.stop(true);
+            },
+          };
+          this.#encoder = await findEncoder(initEncoder, this.#options.encoder);
+        }
+
+        async start(stream) {
+          this.#streamReader = stream.getReader();
+
+          let count = 0;
+          while (true) {
+            count++;
+
+            const { done, value } = await this.#streamReader.read();
+            if (done) {
+              break;
+            }
+
+            const frame = value;
+
+            if (count === 1 || count % 15 === 0) {
+              this.#encoder.encode(frame);
+            }
+            frame.close();
+          }
+        }
+
+        async stop(force = false) {
+          await this.#streamReader.cancel();
+          if (force) {
+            this.flush();
+          }
+        }
+
+        #saveFrame(chunk) {
+          this.#frames.push(chunk);
+        }
+
+        async output(cb) {
+          const initDecoder = {
+            output: (frame) => {
+              cb(frame, this.#options.output);
+              frame.close();
+            },
+            error: (e) => {
+              console.error(e);
+              this.stop(true);
+            },
+          };
+
+          const decoder = new VideoDecoder(initDecoder);
+          decoder.configure(this.#options.decoder);
+
+          this.#frames.forEach((frame, i) => {
+            decoder.decode(frame);
+          });
+
+          await decoder.flush();
+          decoder.close();
+        }
+
+        flush() {
+          this.#frames = [];
+          this.#streamReader = null;
+          this.#encoder.close();
+          this.#encoder = null;
+        }
+      }
+
+      async function main() {
+        // init screen cover effects
+        const container = document.getElementsByTagName("body")[0];
+        const sequence = ["white", "white", "black", "black"];
+        const screen = new ScreenCover({ container, sequence });
+
+        // init stream source
+        const constraints = {
+          audio: false,
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: 30,
+            facingMode: "user",
+          },
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const videoTracks = stream.getTracks();
+        /**
+         * TODO: find the best resolution if many devices
+         */
+        const trackProcessor = new MediaStreamTrackProcessor(videoTracks[0]);
+        const readableStream = trackProcessor.readable;
+
+        // init recorder
+        const options = {
+          encoder: {
+            codec: "vp09.00.10.08",
+            width: 1280,
+            height: 720,
+            bitrate: 2_000_000, // 2 Mbps
+            framerate: 30,
+          },
+          decoder: {
+            codec: "vp09.00.10.08",
+            width: 1280,
+            height: 720,
+            bitrate: 2_000_000, // 2 Mbps
+            framerate: 30,
+          },
+          output: {
+            container: document.getElementById("output"),
+            width: 1280,
+            height: 720,
+          },
+        };
+        const recorder = new Recorder(options);
+
+        const afterSave = () => {
+          screen.next();
+        };
+        await recorder.init(afterSave);
+
+        /**
+         * Start recording
+         */
+        recorder.start(readableStream);
+
+        /**
+         * NOTE: quick and dummy preview
+         */
+        const createCanvasFromFrame = (frame, options) => {
+          const { width, height, container } = options;
+
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const canvasContext = canvas.getContext("2d");
+          canvasContext.drawImage(frame, 0, 0, width, height);
+
+          container.appendChild(canvas);
+        };
+
+        /**
+         * Stop recording after 20 sec
+         */
+        setTimeout(async () => {
+          await recorder.stop();
+          videoTracks.forEach((track) => track.stop());
+          recorder.output(createCanvasFromFrame);
+          recorder.flush();
+          screen.destroy();
+        }, 10 * 1000);
+      }
+
+      window.onload = main;
+    </script>
+  </head>
+  <body>
+    <h1>Examples - Basic</h1>
+    <div id="output"></div>
+  </body>
+</html>
